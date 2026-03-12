@@ -1,0 +1,124 @@
+@startuml
+title Успешный сценарий: Создание сделки и выставление инвойса
+
+actor "Менеджер" as Manager
+participant "Web UI" as UI
+participant "API Gateway" as Gateway
+participant "Deal Service" as DealSvc
+participant "Invoice Service" as InvSvc
+database "PostgreSQL" as DB
+participant "Payment Gateway\n(Stripe/Cloudpayments)" as Payment
+participant "Email Service\n(SendGrid/SMTP)" as Email
+queue "Event Bus\n(RabbitMQ)" as Bus
+participant "Notification\nWorker" as NotifyWorker
+
+== Шаг 1: Создание сделки ==
+
+Manager -> UI: Нажать "Новая сделка"
+UI -> UI: Открыть форму создания
+UI --> Manager: Отобразить форму
+
+Manager -> UI: Заполнить данные:\nКлиент: ООО "Ромашка"\nНазвание: "Разработка лендинга"\nБюджет: 1500$\nУслуга: Веб-разработка
+Manager -> UI: Нажать "Сохранить и перейти к инвойсу"
+UI -> Gateway: POST /api/deals\n{client_id: 123,\ntitle: "Разработка лендинга",\namount: 1500.00,\nservice: "web_dev"}
+activate Gateway
+
+Gateway -> Gateway: Аутентификация и\nпроверка роли (Менеджер)
+Gateway -> DealSvc: Пересылка запроса
+activate DealSvc
+
+DealSvc -> DealSvc: Валидация данных\n(проверка клиента, суммы)
+
+DealSvc -> DB: BEGIN TRANSACTION
+activate DB
+
+DealSvc -> DB: INSERT INTO deals\n(id, client_id, title, amount,\nservice, status)\nVALUES ('D-2026-001', 123,\n'Разработка лендинга', 1500.00,\n'web_dev', 'NEGOTIATION')
+DB --> DealSvc: OK
+
+DealSvc -> DB: COMMIT TRANSACTION
+DB --> DealSvc: Committed
+deactivate DB
+
+DealSvc --> Gateway: 201 Created\n{deal_id: "D-2026-001"}
+deactivate DealSvc
+
+Gateway --> UI: 201 Created\n{deal_id: "D-2026-001"}
+deactivate Gateway
+
+UI -> UI: Перенаправление на\nстраницу создания инвойса
+UI --> Manager: Отобразить форму инвойса\nс подставленными данными
+
+== Шаг 2: Выставление инвойса ==
+
+Manager -> UI: Проверить данные и\nнажать "Выставить инвойс"
+UI -> Gateway: POST /api/invoices\n{deal_id: "D-2026-001",\namount: 1500.00,\nclient_id: 123}
+activate Gateway
+
+Gateway -> InvSvc: Пересылка запроса
+activate InvSvc
+
+InvSvc -> InvSvc: Валидация: проверить,\nчто сделка существует\nи не имеет активного инвойса
+
+InvSvc -> DB: BEGIN TRANSACTION
+activate DB
+
+InvSvc -> DB: INSERT INTO invoices\n(id, deal_id, amount, status)\nVALUES ('INV-2026-001',\n'D-2026-001', 1500.00, 'PENDING')
+DB --> InvSvc: OK
+
+InvSvc -> DB: UPDATE deals\nSET status='INVOICED'\nWHERE id='D-2026-001'
+DB --> InvSvc: OK
+
+InvSvc -> DB: COMMIT TRANSACTION
+DB --> InvSvc: Committed
+deactivate DB
+
+== Шаг 3: Взаимодействие с внешними сервисами ==
+
+InvSvc -> Payment: createPaymentLink(invoice_id='INV-2026-001',\namount=1500.00, currency='USD')
+activate Payment
+
+Payment -> Payment: Генерация платёжной\nссылки в платёжной системе
+Payment --> InvSvc: {payment_url: "https://pay.example.com/inv-001",\npayment_id: "pay_123456"}
+deactivate Payment
+
+InvSvc -> DB: UPDATE invoices\nSET payment_url='https://...',\npayment_id='pay_123456'\nWHERE id='INV-2026-001'
+activate DB
+DB --> InvSvc: OK
+deactivate DB
+
+InvSvc -> Bus: publish(InvoiceCreated,\ninvoice_id='INV-2026-001',\ndeal_id='D-2026-001')
+activate Bus
+Bus --> InvSvc: ACK
+deactivate Bus
+
+InvSvc --> Gateway: 201 Created\n{invoice_id: "INV-2026-001",\npayment_url: "https://..."}
+deactivate InvSvc
+
+Gateway --> UI: 201 Created\n{invoice_id, payment_url}
+deactivate Gateway
+
+UI -> UI: Обновить страницу сделки\nс отображением инвойса
+UI --> Manager: Показать сообщение:\n"Сделка создана. Инвойс INV-2026-001\nотправлен клиенту"
+
+== Асинхронная отправка уведомлений ==
+
+Bus -> NotifyWorker: consume(InvoiceCreated)
+activate NotifyWorker
+
+NotifyWorker -> NotifyWorker: Получить данные клиента\n(имя, email) по deal_id
+
+NotifyWorker -> Email: sendEmail(to="client@romashka.com",\ntemplate="invoice_created",\ndata={client_name: "ООО Ромашка",\ninvoice_id: "INV-2026-001",\namount: "1500.00 USD",\npayment_url: "https://..."})
+activate Email
+
+Email -> Email: Формирование и отправка\nписьма через SMTP
+Email --> NotifyWorker: Status: sent\nMessage-ID: msg-789
+deactivate Email
+
+NotifyWorker -> DB: UPDATE notification_log\nSET status='delivered',\nmessage_id='msg-789'\nWHERE invoice_id='INV-2026-001'
+activate DB
+DB --> NotifyWorker: OK
+deactivate DB
+
+deactivate NotifyWorker
+
+@enduml
