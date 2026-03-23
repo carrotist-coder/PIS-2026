@@ -1,0 +1,160 @@
+@startuml
+title Сценарий с ошибкой: Таймаут платёжного шлюза (Payment Gateway недоступен)
+
+actor "Менеджер" as Manager
+participant "Web UI" as UI
+participant "API Gateway" as Gateway
+participant "Deal Service" as DealSvc
+participant "Invoice Service" as InvSvc
+database "PostgreSQL" as DB
+participant "Payment Gateway\n(Stripe/Cloudpayments)" as Payment
+queue "Event Bus\n(RabbitMQ)" as Bus
+participant "Payment Retry\nWorker" as RetryWorker
+participant "Email Service" as Email
+
+note over Manager, Email
+  Шаг 1: Сделка создана успешно (D-2026-001)
+  Менеджер переходит к выставлению инвойса
+end note
+
+== Шаг 2: Выставление инвойса ==
+
+Manager -> UI: Нажать "Выставить инвойс"
+UI -> Gateway: POST /api/invoices\n{deal_id: "D-2026-001"}
+activate Gateway
+
+Gateway -> InvSvc: Пересылка запроса
+activate InvSvc
+
+InvSvc -> InvSvc: Валидация: проверить,\nчто сделка существует\nи не имеет активного инвойса
+
+InvSvc -> DB: BEGIN TRANSACTION
+activate DB
+
+InvSvc -> DB: INSERT INTO invoices\n(id, deal_id, amount, status)\nVALUES ('INV-2026-001',\n'D-2026-001', 1500.00, 'PENDING')
+DB --> InvSvc: OK
+
+InvSvc -> DB: UPDATE deals\nSET status='INVOICED'\nWHERE id='D-2026-001'
+DB --> InvSvc: OK
+
+InvSvc -> DB: COMMIT TRANSACTION
+DB --> InvSvc: Committed
+deactivate DB
+
+note over InvSvc
+  Инвойс создан в БД со статусом "PENDING"
+  Теперь нужно сгенерировать платёжную ссылку
+end note
+
+== Шаг 3: Ошибка при обращении к платёжному шлюзу ==
+
+InvSvc -> Payment: createPaymentLink(invoice_id='INV-2026-001',\namount=1500.00, currency='USD')
+activate Payment
+
+note over Payment #FFAAAA
+  ⚠️ Платёжный шлюз НЕ ДОСТУПЕН
+  Timeout 5 секунд / 503 Service Unavailable
+end note
+
+Payment --x InvSvc: TimeoutException / HTTP 503
+deactivate Payment
+
+InvSvc -> InvSvc: Перехват исключения
+
+note over InvSvc
+  Система НЕ откатывает транзакцию
+  Инвойс и сделка уже в БД
+end note
+
+InvSvc -> DB: UPDATE invoices\nSET status='PENDING_RETRY',\nerror='Payment gateway timeout',\nretry_count=0\nWHERE id='INV-2026-001'
+activate DB
+DB --> InvSvc: OK
+deactivate DB
+
+InvSvc -> Bus: publish(PaymentLinkGenerationFailed,\ninvoice_id='INV-2026-001',\nretry_count=0)
+activate Bus
+Bus --> InvSvc: ACK
+deactivate Bus
+
+note right of InvSvc #FFFFAA
+  Инвойс в статусе PENDING_RETRY
+  Задача в очереди для повторной генерации
+end note
+
+InvSvc --> Gateway: 207 Multi-Status\n{invoice_id: "INV-2026-001",\nwarning: "Payment gateway timeout",\nmessage: "Платёжная ссылка будет сгенерирована позже"}
+deactivate InvSvc
+
+Gateway --> UI: 207 Multi-Status\n{invoice_id, warning}
+deactivate Gateway
+
+UI --> Manager: Показать предупреждение:\n"Сделка создана, инвойс выставлен.\nПлатёжная ссылка временно недоступна.\nОна будет сгенерирована автоматически"
+
+note over Manager
+  Менеджер получил предупреждение
+  Основные данные сохранены
+end note
+
+== Асинхронная обработка ошибки (Retry через 30 секунд) ==
+
+Bus -> RetryWorker: consume(PaymentLinkGenerationFailed)
+activate RetryWorker
+
+RetryWorker -> RetryWorker: Задержка 30 секунд\n(первая попытка retry)
+
+... 30 секунд спустя ...
+
+RetryWorker -> Payment: createPaymentLink(invoice_id='INV-2026-001')
+activate Payment
+
+note over Payment #AAFFAA
+  ✅ Платёжный шлюз снова доступен
+  Успешная генерация ссылки
+end note
+
+Payment --> RetryWorker: {payment_url: "https://pay.example.com/inv-001",\npayment_id: "pay_123456"}
+deactivate Payment
+
+RetryWorker -> DB: UPDATE invoices\nSET payment_url='https://pay.example.com/inv-001',\npayment_id='pay_123456',\nstatus='PENDING',\nerror=NULL,\nretry_count=1,\nretried_at=NOW()\nWHERE id='INV-2026-001'
+activate DB
+DB --> RetryWorker: OK
+deactivate DB
+
+RetryWorker -> Bus: publish(InvoiceCreated,\ninvoice_id='INV-2026-001',\ndeal_id='D-2026-001')
+activate Bus
+Bus --> RetryWorker: ACK
+deactivate Bus
+
+note over RetryWorker #AAFFAA
+  Платёжная ссылка успешно сгенерирована
+  Инвойс теперь готов к отправке клиенту
+end note
+
+deactivate RetryWorker
+
+== Асинхронная отправка уведомлений клиенту ==
+
+Bus -> NotificationWorker: consume(InvoiceCreated)
+activate NotificationWorker
+
+NotificationWorker -> NotificationWorker: Получить данные клиента\n(имя, email) по deal_id
+
+NotificationWorker -> Email: sendEmail(to="client@romashka.com",\ntemplate="invoice_created",\ndata={client_name: "ООО Ромашка",\ninvoice_id: "INV-2026-001",\namount: "1500.00 USD",\npayment_url: "https://pay.example.com/inv-001"})
+activate Email
+
+Email -> Email: Формирование и отправка\nписьма через SMTP
+Email --> NotificationWorker: Status: sent\nMessage-ID: msg-789
+deactivate Email
+
+NotificationWorker -> DB: UPDATE notification_log\nSET status='delivered',\nmessage_id='msg-789',\nsent_at=NOW()\nWHERE invoice_id='INV-2026-001'
+activate DB
+DB --> NotificationWorker: OK
+deactivate DB
+
+note over NotificationWorker #AAFFAA
+  Email успешно отправлен клиенту
+  Клиент получил платёжную ссылку
+end note
+
+deactivate NotificationWorker
+
+@enduml
