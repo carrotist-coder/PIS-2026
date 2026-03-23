@@ -1,0 +1,150 @@
+@startuml Request Service - Hexagonal Architecture
+
+!define DOMAIN_COLOR #E8F5E9
+!define APPLICATION_COLOR #E3F2FD
+!define INFRASTRUCTURE_COLOR #FFF9C4
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam rectangle {
+    BackgroundColor<<domain>> DOMAIN_COLOR
+    BorderColor<<domain>> #4CAF50
+    BackgroundColor<<application>> APPLICATION_COLOR
+    BorderColor<<application>> #2196F3
+    BackgroundColor<<infrastructure>> INFRASTRUCTURE_COLOR
+    BorderColor<<infrastructure>> #FFC107
+}
+
+title Гексагональная архитектура: Request Service (ПСО «Юго-Запад»)
+
+' Infrastructure Layer
+package "Infrastructure Layer" <<infrastructure>> {
+    ' Входящие адаптеры
+    rectangle "REST API" as REST {
+        component "RequestController" as Controller
+    }
+    
+    ' Исходящие адаптеры
+    rectangle "Persistence" as Persistence {
+        component "InMemoryRequestRepository" as InMemRepo
+    }
+    
+    rectangle "Notification" as Notification {
+        component "MockSmsService" as MockSms
+    }
+    
+    rectangle "Configuration" as Config {
+        component "BeanConfiguration" as Beans
+    }
+}
+
+' Application Layer
+package "Application Layer" <<application>> {
+    rectangle "Inbound Ports" as InPorts {
+        interface "CreateRequestUseCase" as CreateUC
+    }
+    
+    rectangle "Outbound Ports" as OutPorts {
+        interface "RequestRepository" as RepoPort
+        interface "NotificationService" as NotiPort
+    }
+    
+    rectangle "Service" as Service {
+        component "RequestService" as ReqService
+    }
+}
+
+' Domain Layer
+package "Domain Layer" <<domain>> {
+    rectangle "Aggregates" as Aggregates {
+        component "Request" as Request
+    }
+    
+    rectangle "Entities" as Entities {
+        component "Group" as Group
+    }
+    
+    rectangle "Value Objects" as VOs {
+        component "Zone" as Zone
+        component "RequestStatus" as Status
+    }
+}
+
+' Связи Infrastructure → Application
+Controller --> CreateUC : <<uses>>
+InMemRepo ..|> RepoPort : <<implements>>
+MockSms ..|> NotiPort : <<implements>>
+Beans --> Controller : <<creates>>
+Beans --> InMemRepo : <<creates>>
+Beans --> MockSms : <<creates>>
+Beans --> ReqService : <<creates>>
+
+' Связи Application
+ReqService ..|> CreateUC : <<implements>>
+ReqService --> RepoPort : <<depends on>>
+ReqService --> NotiPort : <<depends on>>
+
+' Связи Application → Domain
+ReqService --> Request : <<uses>>
+ReqService --> Group : <<uses>>
+ReqService --> Zone : <<uses>>
+
+' Связи Domain
+Request *-- Group : contains
+Request --> Zone : uses
+Request --> Status : has
+
+note right of Request
+  <b>Агрегат: Request</b>
+  ----
+  • id: String (REQ-YYYY-NNNN)
+  • coordinatorId: String
+  • zone: Zone
+  • group: Group
+  • status: RequestStatus
+  • createdAt: Instant
+  ----
+  <b>Business Rules:</b>
+  • Группа: 3-5 участников
+  • Статус: DRAFT → ACTIVE
+  • Zone: NORTH/SOUTH/EAST/WEST
+end note
+
+note left of CreateUC
+  <b>Входящий порт</b>
+  ----
+  Клиенты вызывают систему
+  через этот интерфейс
+end note
+
+note left of RepoPort
+  <b>Исходящий порт</b>
+  ----
+  Система вызывает внешний мир
+  через этот интерфейс
+end note
+
+note bottom of Controller
+  <b>HTTP Adapter</b>
+  ----
+  POST /api/requests
+  {
+    "coordinatorId": "coord-001",
+    "zone": "NORTH",
+    "volunteerIds": ["vol-1", "vol-2", "vol-3"]
+  }
+end note
+
+legend right
+  |<DOMAIN_COLOR>| <b>Domain Layer</b> |
+  | Чистая бизнес-логика |
+  | Не зависит от фреймворков |
+  |<APPLICATION_COLOR>| <b>Application Layer</b> |
+  | Порты (интерфейсы) |
+  | Сервисы (use-case) |
+  |<INFRASTRUCTURE_COLOR>| <b>Infrastructure Layer</b> |
+  | Адаптеры (реализации) |
+  | REST, БД, SMS, DI-config |
+endlegend
+
+@enduml
