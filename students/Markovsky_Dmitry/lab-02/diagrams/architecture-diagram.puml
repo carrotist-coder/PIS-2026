@@ -1,4 +1,4 @@
-@startuml Request Service - Hexagonal Architecture
+@startuml Deal Service - Hexagonal Architecture
 
 !define DOMAIN_COLOR #E8F5E9
 !define APPLICATION_COLOR #E3F2FD
@@ -15,124 +15,153 @@ skinparam rectangle {
     BorderColor<<infrastructure>> #FFC107
 }
 
-title Гексагональная архитектура: Request Service (ПСО «Юго-Запад»)
+title Гексагональная архитектура: Deal Service (Мини-CRM «Фриланс без паники»)
 
 ' Infrastructure Layer
 package "Infrastructure Layer" <<infrastructure>> {
     ' Входящие адаптеры
     rectangle "REST API" as REST {
-        component "RequestController" as Controller
+        component "DealController" as Controller
     }
     
     ' Исходящие адаптеры
     rectangle "Persistence" as Persistence {
-        component "InMemoryRequestRepository" as InMemRepo
+        component "InMemoryDealRepository" as InMemRepo
     }
     
-    rectangle "Notification" as Notification {
-        component "MockSmsService" as MockSms
+    rectangle "External Services" as External {
+        component "MockInvoiceService" as MockInvoice
+        component "ConsoleNotificationService" as ConsoleNotif
     }
     
     rectangle "Configuration" as Config {
-        component "BeanConfiguration" as Beans
+        component "DIContainer" as DI
     }
 }
 
 ' Application Layer
 package "Application Layer" <<application>> {
     rectangle "Inbound Ports" as InPorts {
-        interface "CreateRequestUseCase" as CreateUC
+        interface "CreateDealUseCase" as CreateUC
+        interface "GetDealUseCase" as GetUC
     }
     
     rectangle "Outbound Ports" as OutPorts {
-        interface "RequestRepository" as RepoPort
-        interface "NotificationService" as NotiPort
+        interface "DealRepository" as RepoPort
+        interface "InvoiceService" as InvoicePort
+        interface "NotificationService" as NotifPort
     }
     
     rectangle "Service" as Service {
-        component "RequestService" as ReqService
+        component "DealService" as DealService
     }
 }
 
 ' Domain Layer
 package "Domain Layer" <<domain>> {
     rectangle "Aggregates" as Aggregates {
-        component "Request" as Request
-    }
-    
-    rectangle "Entities" as Entities {
-        component "Group" as Group
+        component "Deal" as Deal
     }
     
     rectangle "Value Objects" as VOs {
-        component "Zone" as Zone
-        component "RequestStatus" as Status
+        component "Money" as Money
+        component "DealStatus" as DealStatus
+    }
+    
+    rectangle "Exceptions" as Exceptions {
+        component "DomainException" as DomainEx
     }
 }
 
 ' Связи Infrastructure → Application
 Controller --> CreateUC : <<uses>>
+Controller --> GetUC : <<uses>>
 InMemRepo ..|> RepoPort : <<implements>>
-MockSms ..|> NotiPort : <<implements>>
-Beans --> Controller : <<creates>>
-Beans --> InMemRepo : <<creates>>
-Beans --> MockSms : <<creates>>
-Beans --> ReqService : <<creates>>
+MockInvoice ..|> InvoicePort : <<implements>>
+ConsoleNotif ..|> NotifPort : <<implements>>
+DI --> Controller : <<creates>>
+DI --> InMemRepo : <<creates>>
+DI --> MockInvoice : <<creates>>
+DI --> ConsoleNotif : <<creates>>
+DI --> DealService : <<creates>>
 
 ' Связи Application
-ReqService ..|> CreateUC : <<implements>>
-ReqService --> RepoPort : <<depends on>>
-ReqService --> NotiPort : <<depends on>>
+DealService ..|> CreateUC : <<implements>>
+DealService ..|> GetUC : <<implements>>
+DealService --> RepoPort : <<depends on>>
+DealService --> InvoicePort : <<depends on>>
+DealService --> NotifPort : <<depends on>>
 
 ' Связи Application → Domain
-ReqService --> Request : <<uses>>
-ReqService --> Group : <<uses>>
-ReqService --> Zone : <<uses>>
+DealService --> Deal : <<uses>>
+DealService --> Money : <<uses>>
+DealService --> DealStatus : <<uses>>
 
 ' Связи Domain
-Request *-- Group : contains
-Request --> Zone : uses
-Request --> Status : has
+Deal *-- Money : has
+Deal --> DealStatus : has
+Deal --> DomainEx : <<throws>>
 
-note right of Request
-  <b>Агрегат: Request</b>
+note right of Deal
+  <b>Агрегат: Deal</b>
   ----
-  • id: String (REQ-YYYY-NNNN)
-  • coordinatorId: String
-  • zone: Zone
-  • group: Group
-  • status: RequestStatus
-  • createdAt: Instant
+  • id: String (D-YYYY-NNNN)
+  • clientId: String
+  • title: String
+  • amount: Money
+  • status: DealStatus
+  • createdAt: datetime
   ----
   <b>Business Rules:</b>
-  • Группа: 3-5 участников
-  • Статус: DRAFT → ACTIVE
-  • Zone: NORTH/SOUTH/EAST/WEST
+  • Сумма > 0
+  • Нельзя изменить после INVOICED
+  • Статус: NEGOTIATION → INVOICED → PAID
+end note
+
+note right of Money
+  <b>Value Object: Money</b>
+  ----
+  • amount: Decimal
+  • currency: String
+  ----
+  <b>Rules:</b>
+  • amount >= 0
+  • currency = USD/BYN/EUR
 end note
 
 note left of CreateUC
   <b>Входящий порт</b>
   ----
-  Клиенты вызывают систему
-  через этот интерфейс
+  create_deal(command: CreateDealCommand) -> str
+  get_deal(deal_id: str) -> Deal
 end note
 
 note left of RepoPort
   <b>Исходящий порт</b>
   ----
-  Система вызывает внешний мир
-  через этот интерфейс
+  save(deal: Deal) -> None
+  find_by_id(deal_id: str) -> Optional[Deal]
+  update_status(deal_id: str, status: DealStatus) -> None
+end note
+
+note left of InvoicePort
+  <b>Исходящий порт</b>
+  ----
+  create_invoice(deal_id: str, amount: Money) -> str
 end note
 
 note bottom of Controller
   <b>HTTP Adapter</b>
   ----
-  POST /api/requests
+  POST /api/deals
   {
-    "coordinatorId": "coord-001",
-    "zone": "NORTH",
-    "volunteerIds": ["vol-1", "vol-2", "vol-3"]
+    "clientId": "cli-001",
+    "title": "Разработка лендинга",
+    "amount": 1500.00,
+    "currency": "USD"
   }
+  
+  GET /api/deals/{id}
 end note
 
 legend right
@@ -144,7 +173,7 @@ legend right
   | Сервисы (use-case) |
   |<INFRASTRUCTURE_COLOR>| <b>Infrastructure Layer</b> |
   | Адаптеры (реализации) |
-  | REST, БД, SMS, DI-config |
+  | REST, БД, внешние сервисы, DI |
 endlegend
 
 @enduml
