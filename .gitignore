@@ -13,7 +13,6 @@ build/
 .cache/
 .next/
 .nuxt/
-out/
 coverage/
 storybook-static/
 
