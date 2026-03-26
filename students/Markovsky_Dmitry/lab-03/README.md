@@ -132,7 +132,7 @@ class Money:
 
 **Скриншот:**
 
-_[Вставьте скриншот pytest-тестов для VO]_
+<img src="./diagrams/test_value_objects.png"></img>
 
 ---
 
