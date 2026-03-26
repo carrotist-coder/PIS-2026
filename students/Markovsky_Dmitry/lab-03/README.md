@@ -140,19 +140,143 @@ _[Вставьте скриншот pytest-тестов для VO]_
 
 **Созданные Entity:**
 
-1. **_[Название Entity 1]_** - _[описание]_
-   - ID поле: `_[имя поля]_`
-   - Бизнес-правила: _[какие инварианты]_
-   - Файл: `domain/entities/_[имя файла]_.py`
+1. **_Deal_** - _основная сущность сделки_
+   - ID поле: `deal_id`
+   - Бизнес-правила: нельзя выставить инвойс на оплаченную сделку, нельзя отменить оплаченную
+   - Файл: `domain/entities/deal.py`
 
-2. **_[Название Entity 2]_** - _[описание]_
-   - ID поле: `_[имя поля]_`
-   - Бизнес-правила: _[инварианты]_
-   - Файл: `domain/entities/_[имя файла]_.py`
+2. **_Invoice_** - _инвойс (счёт)_
+   - ID поле: `invoice_id`
+   - Бизнес-правила: инвойс нельзя изменить после оплаты
+   - Файл: `domain/entities/invoice.py`
 
 **Пример кода** (одна Entity):
 ```python
-_[Вставьте код вашей Entity с invariants]_
+class Deal:
+    """Entity: business deal with a client."""
+    
+    def __init__(
+        self,
+        deal_id: str,
+        client_id: ClientId,
+        title: DealTitle,
+        amount: Money,
+        status: DealStatus = None
+    ):
+        """
+        Initialize Deal entity.
+        
+        Args:
+            deal_id: Unique identifier
+            client_id: Client reference
+            title: Deal title
+            amount: Deal value
+            status: Initial status (default: NEGOTIATION)
+        """
+        self._id = deal_id
+        self._client_id = client_id
+        self._title = title
+        self._amount = amount
+        self._status = status or DealStatus.NEGOTIATION
+        self._created_at = datetime.now()
+        self._updated_at = datetime.now()
+        self._events: List[DomainEvent] = []
+        
+        self._validate()
+        self._register_event(DealCreated(deal_id, client_id, title, amount))
+    
+    def _validate(self) -> None:
+        """Validate business invariants."""
+        if self._amount.amount <= 0:
+            raise ValueError(f"Deal amount must be positive, got: {self._amount.amount}")
+    
+    def _register_event(self, event: DomainEvent) -> None:
+        """Register a domain event."""
+        self._events.append(event)
+    
+    def mark_as_invoiced(self, invoice_id: str) -> None:
+        """Mark deal as invoiced."""
+        if not self._status.can_transition_to(DealStatus.INVOICED):
+            raise ValueError(
+                f"Cannot invoice deal: current status is {self._status}, "
+                f"expected NEGOTIATION or APPROVAL"
+            )
+        
+        self._status = DealStatus.INVOICED
+        self._updated_at = datetime.now()
+        self._register_event(DealInvoiced(self._id, invoice_id, self._amount))
+    
+    def mark_as_paid(self) -> None:
+        """Mark deal as paid."""
+        if not self._status.can_transition_to(DealStatus.PAID):
+            raise ValueError(
+                f"Cannot mark as paid: deal is in status {self._status}, "
+                f"expected INVOICED"
+            )
+        
+        self._status = DealStatus.PAID
+        self._updated_at = datetime.now()
+        self._register_event(DealPaid(self._id))
+    
+    def cancel(self, reason: str) -> None:
+        """Cancel the deal."""
+        if not self._status.can_transition_to(DealStatus.CANCELLED):
+            raise ValueError(
+                f"Cannot cancel deal: deal is in status {self._status}"
+            )
+        
+        self._status = DealStatus.CANCELLED
+        self._updated_at = datetime.now()
+        self._register_event(DealCancelled(self._id, reason))
+    
+    def get_events(self) -> List[DomainEvent]:
+        """Get all registered events."""
+        return self._events.copy()
+    
+    def clear_events(self) -> None:
+        """Clear all registered events."""
+        self._events.clear()
+    
+    # Properties
+    @property
+    def id(self) -> str:
+        return self._id
+    
+    @property
+    def client_id(self) -> ClientId:
+        return self._client_id
+    
+    @property
+    def title(self) -> DealTitle:
+        return self._title
+    
+    @property
+    def amount(self) -> Money:
+        return self._amount
+    
+    @property
+    def status(self) -> DealStatus:
+        return self._status
+    
+    @property
+    def created_at(self) -> datetime:
+        return self._created_at
+    
+    @property
+    def updated_at(self) -> datetime:
+        return self._updated_at
+    
+    # Equality based on ID
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Deal):
+            return False
+        return self._id == other._id
+    
+    def __hash__(self) -> int:
+        return hash(self._id)
+    
+    def __repr__(self) -> str:
+        return f"Deal(id='{self._id}', client='{self._client_id}', amount={self._amount}, status={self._status})"
 ```
 
 **Скриншот тестов:**
@@ -193,17 +317,67 @@ _[Скриншот pytest для проверки инвариантов агр�
 
 **Созданные события:**
 
-1. **_[Событие 1]_** - _[когда генерируется]_
-   - Данные: `_[какие поля]_`
-   - Файл: `domain/events/_[имя файла]_.py`
+1. **DealCreated** - _при создании сделки_
+   - Данные: `deal_id, client_id, title, amount`
+   - Файл: `domain/events/deal_events.py`
 
-2. **_[Событие 2]_** - _[когда генерируется]_
-   - Данные: `_[поля]_`
-   - Файл: `domain/events/_[имя файла]_.py`
+2. **DealInvoiced** - _при выставлении инвойса_
+   - Данные: `deal_id, invoice_id, amount`
+   - Файл: `domain/events/deal_events.py`
+
+3. **DealPaid** - _при оплате сделки_
+   - Данные: `deal_id`
+   - Файл: `domain/events/deal_events.py`
+
+4. **DealCancelled** - _при отмене сделки_
+   - Данные: `deal_id, reason`
+   - Файл: `domain/events/deal_events.py`
 
 **Пример кода события:**
 ```python
-_[Вставьте код одного Domain Event]_
+@dataclass
+class DomainEvent:
+    """Base class for all domain events."""
+    
+    occurred_at: datetime = None
+    
+    def __post_init__(self):
+        if self.occurred_at is None:
+            self.occurred_at = datetime.now()
+
+
+@dataclass
+class DealCreated(DomainEvent):
+    """Event raised when a deal is created."""
+    
+    deal_id: str
+    client_id: ClientId
+    title: DealTitle
+    amount: Money
+
+
+@dataclass
+class DealInvoiced(DomainEvent):
+    """Event raised when an invoice is created for a deal."""
+    
+    deal_id: str
+    invoice_id: str
+    amount: Money
+
+
+@dataclass
+class DealPaid(DomainEvent):
+    """Event raised when a deal is paid."""
+    
+    deal_id: str
+
+
+@dataclass
+class DealCancelled(DomainEvent):
+    """Event raised when a deal is cancelled."""
+    
+    deal_id: str
+    reason: str
 ```
 
 **Скриншот:**
