@@ -10,9 +10,7 @@ from src.application.service.deal_service import DealService
 from src.application.port.outbound.deal_repository import DealRepository
 from src.application.port.outbound.invoice_service import InvoiceService
 from src.application.port.outbound.notification_service import NotificationService
-from src.infrastructure.adapter.outbound.in_memory_deal_repository import (
-    InMemoryDealRepository
-)
+from src.infrastructure.adapter.outbound import PostgresDealRepository
 from src.infrastructure.adapter.outbound.mock_invoice_service import (
     MockInvoiceService
 )
@@ -20,6 +18,7 @@ from src.infrastructure.adapter.outbound.console_notification_service import (
     ConsoleNotificationService
 )
 from src.infrastructure.adapter.inbound.deal_controller import DealController
+from src.infrastructure.config import DATABASE_URL
 
 
 class DependencyContainer:
@@ -42,7 +41,7 @@ class DependencyContainer:
         2. Inject outbound adapters into application service
         3. Inject application service into inbound adapters
         """
-        self.deal_repository: DealRepository = InMemoryDealRepository()
+        self.deal_repository = PostgresDealRepository(DATABASE_URL)
         self.invoice_service: InvoiceService = MockInvoiceService(
             simulate_failure=False  # Set to True for testing error handling
         )
