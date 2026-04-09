@@ -1,1 +1,9 @@
-# Will be added in future labs
+fastapi==0.135.3
+uvicorn==0.44.0
+sqlalchemy==2.0.23
+asyncpg==0.31.0
+alembic==1.18.4
+psycopg2-binary==2.9.11
+pytest==9.0.2
+pytest-asyncio==1.3.0
+python-dotenv==1.0.0
